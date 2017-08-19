@@ -1,0 +1,5 @@
+This is a collection of miscellaneous Emacs extensions written by
+Miles Bader.
+
+They are generally too small to deserve their own package, and in most
+cases are downright tiny (but often still quite handy).
