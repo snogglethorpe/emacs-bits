@@ -31,12 +31,16 @@ The output should contain one font name per line."
   :group 'font-selection)
 
 
-(defun list-fonts-display (&optional matching)
+(defun list-fonts-display (&optional matching sample-string)
   "Display a list of font-families available via font-config, in a new buffer.
 
 If the optional argument MATCHING is non-nil, only font families
 matching that regexp are displayed; interactively, a prefix
-argument will prompt for the regexp.
+argument (e.g., \\[universal-argument] \\[list-fonts-display]) will prompt for the regexp.
+
+If SAMPLE-STRING is non-nil, include that string for each font.
+Interactively, SAMPLE-STRING is prompted for if the prefix
+argument is \\[universal-argument] \\[universal-argument].
 
 The name of each font family is displayed using that family, as
 well as in the default font (to handle the case where a font
@@ -44,7 +48,13 @@ cannot be used to display its own name)."
   (interactive
    (list
     (and current-prefix-arg
-	 (read-string "Display font families matching regexp: "))))
+	 (read-string "Display font families matching regexp: "))
+    (and (> (prefix-numeric-value current-prefix-arg) 4)
+	 (read-string "Sample string: "))))
+  (when (and matching (string= matching ""))
+    (setq matching nil))
+  (when (and sample-string (string= sample-string ""))
+    (setq sample-string nil))
   (let (families)
     (with-temp-buffer
       (shell-command list-fonts-display-command t)
@@ -70,9 +80,14 @@ cannot be used to display its own name)."
 		 (car (sort (split-string family ",")
 			    (lambda (x y) (> (length x) (length y))))))
 		(nice-family (replace-regexp-in-string "," ", " family)))
-	    (insert (concat (propertize nice-family
-					'face (list :family family-name))
-			    " (" nice-family ")"))
+	    (when sample-string
+	      (insert
+	       (propertize sample-string 'face (list :family family-name))
+	       "\t"))
+	    (insert
+	     (concat (propertize nice-family
+				 'face (list :family family-name))
+		     " (" nice-family ")"))
 	    (newline)))
 	(goto-char (point-min)))
       (display-buffer buf))))
