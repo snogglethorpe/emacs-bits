@@ -85,6 +85,9 @@ this setting applies when that isn't possible."
 ;;   
 ;;   4. Comments are indicated by "#" at the beginning of the line
 ;;
+;;   5. The pinyin section follows the terms, and is surrounded by spaces
+;;      and square brackets.
+;;
 ;; There's also some dependence on entry-ordering in the dictionary
 ;; file.  The file is (seemingly) ordered so that prefixes precede
 ;; the entries which they are prefixes of (e.g., "ab" comes before
@@ -94,8 +97,11 @@ this setting applies when that isn't possible."
 
 
 (defun cedict-entry-regexp (string)
-  "Return a regexp that matches STRING as a term in a CEDICT dictionary entry."
-  (concat "^\\(" string "\\|[^[/\n#]* " string "\\)"))
+  "Return a regexp matching entries for terms starting with STRING in a CEDICT dictionary.
+The extent of the regexp is guaranteed to end at the start of the
+entry's definition section (so, for instance, searching forward
+for that regexp will leave point on the definition)."
+  (concat "^\\(?:" string "\\|[^[/\n#]* " string "\\)[^[/\n]]*[^]]*] "))
 
 
 (defun cedict-entry-term-length (entry)
@@ -176,49 +182,121 @@ If both fields match, then DEFAULT-TERM-TO-KEEP is used to choose which term fie
 	      (substring entry (+ term-len term-len 1))))))
 
 
+(defun cedict-low-quality-definition-p ()
+  "Return non-nil if the definition following point is 'low-quality'.
+Point must actually be at the start of the _definition_ portion
+of an entry (not at the beginning of the entry).
+
+'Low-quality' entries are ignored when another entry for the same term exists.
+
+Currently 'low-quality' means only /surname .../ entries."
+  (looking-at "/surname "))
+
+
 
 ;;; ----------------------------------------------------------------
-;;; Core search function
+;;; Core search functions
+
+
+(defun cedict-search-for-string (string)
+  "Search for the term STRING in the current buffer, which should in CEDICT format.
+Set point to the beginning of the first matching entry.
+If there are no entries that match any prefix of STRING, an error is signaled."
+  (goto-char (point-min))
+  (let* ((first-char (substring string 0 1))
+	 (first-char-regexp (cedict-entry-regexp first-char))
+	 ;; 99.9% of the time we'll be looking up Chinese characters
+	 ;; where case-folding isn't an issue, but turn on
+	 ;; case-folding anyway to properly handle the remaining
+	 ;; rare cases.
+	 (case-fold-search t))
+
+    ;; Find the first entry in the dictionary beginning with the first
+    ;; character of STRING.
+    ;;
+    (when (not (re-search-forward first-char-regexp nil t))
+      (error "No CEDICT entry found"))
+
+    (let (;; Location of successful match
+	  (result-pos (point))
+	  ;; Length of the term we're looking for
+	  (search-term-length 1))
+
+      ;; Increase the size of the prefix of STRING we're looking for,
+      ;; unless our initial search found a "low-quality" definition.
+      ;;
+      ;; Although in most cases multiple definitions for a term are
+      ;; grouped into a single entry, CEDICT occasionally has multiple
+      ;; entries for the same term.
+      ;;
+      ;; By default our search process will return the first entry in
+      ;; such cases, so if we're looking at a low-quality definition,
+      ;; we'd like to continue searching further with this same
+      ;; prefix length, in case we can find something better.
+      ;;
+      (unless (cedict-low-quality-definition-p)
+	(setq search-term-length (1+ search-term-length)))
+
+      ;; Our initial search from the beginning of the file, for a
+      ;; single-character prefix of STRING, put us on the first entry
+      ;; starting with that characters.  Entries in the dictionary are sorted
+      ;; by the first character, so we can easily locate the founds of the
+      ;; section beginning with that character, which allows us to constrain
+      ;; subsequent searches for longer prefixes of STRING in a much smaller
+      ;; region.
+      ;;
+      (forward-line 0)			; move back to start of first entry
+      (let ((section-start (point)))
+
+	;; Skip until we find an entry not starting with the same first
+	;; character.
+	;;
+	(forward-line 1)
+	(while (looking-at first-char-regexp)
+	  (forward-line 1))
+
+	(let ((section-end (point))
+	      (failed nil))
+
+	  ;; In case we're going to start out by searching for another
+	  ;; single-character entry (which can happen when the initial
+	  ;; entry was "low-quality"), move to a place where the search
+	  ;; won't simply find the initial entry again.
+	  ;;
+	  (goto-char result-pos)
+
+	  (while (and (not failed) (<= search-term-length (length string)))
+	    (if (not
+		 (re-search-forward
+		  (cedict-entry-regexp (substring string 0 search-term-length))
+		  section-end
+		  t))
+		;; Stop the search loop
+		(setq failed t)
+
+	      ;; Remember the last place we successfully found something.
+	      (setq result-pos (point))
+
+	      ;; Increase the size of the prefix of STRING we're looking for,
+	      ;; unless this is a "low-quality" definition.
+	      ;;
+	      (unless (cedict-low-quality-definition-p)
+		(setq search-term-length (1+ search-term-length)))))
+
+	  ;; Move to the beginning of the last successful match.
+	  ;;
+	  (goto-char result-pos)
+	  (forward-line 0))))))
 
 
 (defun cedict-lookup-string (string)
   "Lookup the term STRING in CEDICT, and return the longest matching entry.
 If there are no entries that match any prefix of STRING, an error is signaled."
   (with-current-buffer (find-file-noselect cedict-file)
-    (goto-char (point-min))
-    (let* ((first-char (substring string 0 1))
-	   (first-char-regexp (cedict-entry-regexp first-char))
-	   ;; 99.9% of the time we'll be looking up Chinese characters
-	   ;; where case-folding isn't an issue, but turn on
-	   ;; case-folding anyway to properly handle the remaining
-	   ;; rare cases.
-	   (case-fold-search t))
-      (when (not (re-search-forward first-char-regexp nil t))
-	(error "No CEDICT entry found"))
-      (forward-line 0)
-      (let ((section-start (point)))
-	(forward-line 1)
-	(while (looking-at first-char-regexp)
-	  (forward-line 1))
-	(let ((section-end (point))
-	      (result-pos section-start)
-	      (search-term-length 2)
-	      (failed nil))
-	  (while (and (not failed) (<= search-term-length (length string)))
-	    (goto-char section-start)
-	    (if (not
-		 (re-search-forward
-		  (cedict-entry-regexp (substring string 0 search-term-length))
-		  section-end
-		  t))
-		(setq failed t)
-	      (setq result-pos (point))
-	      (setq search-term-length (1+ search-term-length))))
-	  (goto-char result-pos)
-	  (forward-line 0)
-	  (let ((result-start (point)))
-	    (forward-line 1)
-	    (buffer-substring-no-properties result-start (1- (point)))))))))
+    (cedict-search-for-string string)
+    (let ((result-start (point)))
+      (forward-line 1)
+      (buffer-substring-no-properties result-start (1- (point))))))
 
 
 
