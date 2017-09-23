@@ -113,7 +113,10 @@ dictionary entry ENTRY which matches PREFIX."
   (let* ((term-len (cedict-entry-term-length entry))
 	 ;; The result can at most be as long as PREFIX.
 	 (max-len (min term-len (length prefix)))
-	 (pfx-len 0))
+	 (pfx-len 0)
+	 ;; `char-equal' uses this.  It's irrelevant for Chinese
+	 ;; characters, but there are a few entries for roman letters.
+	 (case-fold-search t))
     ;;
     ;; CEDICT entries have two term fields, one for traditional
     ;; characters, and one for simplified, so we consider both.  
@@ -123,10 +126,10 @@ dictionary entry ENTRY which matches PREFIX."
     ;; character.
     ;;
     (while (and (< pfx-len max-len)
-		(or (= (aref entry pfx-len)
-		       (aref prefix pfx-len))
-		    (= (aref entry (+ term-len 1 pfx-len))
-		       (aref prefix pfx-len))))
+		(or (char-equal (aref entry pfx-len)
+				(aref prefix pfx-len))
+		    (char-equal (aref entry (+ term-len 1 pfx-len))
+				(aref prefix pfx-len))))
       (setq pfx-len (1+ pfx-len)))
     pfx-len))
 
@@ -138,7 +141,10 @@ If both fields match, then DEFAULT-TERM-TO-KEEP is used to choose which term fie
 	 ;; The result can at most be as long as STRING.
 	 (max-len (min term-len (length string)))
 	 (trad-pfx-len 0)
-	 (simp-pfx-len 0))
+	 (simp-pfx-len 0)
+	 ;; `char-equal' uses this.  It's irrelevant for Chinese
+	 ;; characters, but there are a few entries for roman letters.
+	 (case-fold-search t))
     ;;
     ;; CEDICT entries have two term fields, one for traditional
     ;; characters, and one for simplified, so we consider both.  
@@ -146,15 +152,15 @@ If both fields match, then DEFAULT-TERM-TO-KEEP is used to choose which term fie
     ;; See how much of the traditional term matches.
     ;;
     (while (and (< trad-pfx-len max-len)
-		(= (aref entry trad-pfx-len)
-		   (aref string trad-pfx-len)))
+		(char-equal (aref entry trad-pfx-len)
+			    (aref string trad-pfx-len)))
       (setq trad-pfx-len (1+ trad-pfx-len)))
 
     ;; Now see how much of the simplified term matches.
     ;;
     (while (and (< simp-pfx-len max-len)
-		(= (aref entry (+ term-len 1 simp-pfx-len))
-		   (aref string simp-pfx-len)))
+		(char-equal (aref entry (+ term-len 1 simp-pfx-len))
+			    (aref string simp-pfx-len)))
       (setq simp-pfx-len (1+ simp-pfx-len)))
 
     ;; Now choose whichever matched more characters in STRING.
@@ -181,7 +187,12 @@ If there are no entries that match any prefix of STRING, an error is signaled."
   (with-current-buffer (find-file-noselect cedict-file)
     (goto-char (point-min))
     (let* ((first-char (substring string 0 1))
-	   (first-char-regexp (cedict-entry-regexp first-char)))
+	   (first-char-regexp (cedict-entry-regexp first-char))
+	   ;; 99.9% of the time we'll be looking up Chinese characters
+	   ;; where case-folding isn't an issue, but turn on
+	   ;; case-folding anyway to properly handle the remaining
+	   ;; rare cases.
+	   (case-fold-search t))
       (when (not (re-search-forward first-char-regexp nil t))
 	(error "No CEDICT entry found"))
       (forward-line 0)
