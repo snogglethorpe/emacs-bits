@@ -83,14 +83,19 @@ this setting applies when that isn't possible."
 ;;   
 ;;   3. TERM_T and TERM_S are separated by a single space character
 ;;   
-;;   4. TERM_S is followed by a single space character and the [
-;;      marking the start of the pinyin field
+;;   4. Comments are indicated by "#" at the beginning of the line
+;;
+;; There's also some dependence on entry-ordering in the dictionary
+;; file.  The file is (seemingly) ordered so that prefixes precede
+;; the entries which they are prefixes of (e.g., "ab" comes before
+;; "abc"), so the code here simply returns the first entry which
+;; matches the longest-possible prefix of the search term.
 ;;
 
 
 (defun cedict-entry-regexp (string)
   "Return a regexp that matches STRING as a term in a CEDICT dictionary entry."
-  (concat "^\\(" string "\\|[^[/\n]* " string "\\)[^[/\n]* [[]"))
+  (concat "^\\(" string "\\|[^[/\n#]* " string "\\)"))
 
 
 (defun cedict-entry-term-length (entry)
