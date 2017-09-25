@@ -331,6 +331,20 @@ If there are no entries that match any prefix of STRING, an error is signaled."
 
 
 ;;; ----------------------------------------------------------------
+;;; Helper functions
+
+
+(defun cedict-search-string-at-point ()
+  "Return a 'reasonably large' search string starting at point.
+'Reasonably large' means `cedict-lookup-at-point-max-size' characters long
+(because the actual lookup commands will return partial prefix matches, there's no need to be especially careful about the length of the search term)."
+  (buffer-substring-no-properties
+   (point)
+   (min (+ (point) cedict-lookup-at-point-max-size) (point-max))))
+
+
+
+;;; ----------------------------------------------------------------
 ;;; User commands
 
 
@@ -347,16 +361,9 @@ traditional or simplified terms in the entry is displayed."
   ;; can lookup.
   (skip-chars-forward "[:space:]")
 
-  (let* ((pos (point))
+  (let* ((start-pos (point))
 
-	 (search-string
-	  ;; Grab a nice large string to lookup.
-	  ;; `cedict-lookup-string' will return the largest entry
-	  ;; matching any prefix of this string, so we don't need to
-	  ;; be careful about where it ends.
-	  (buffer-substring-no-properties 
-	   pos
-	   (min (+ pos cedict-lookup-at-point-max-size) (point-max))))
+	 (search-string (cedict-search-string-at-point))
 
 	 (entry
 	  ;; Do the actual dictionary lookup.
@@ -392,7 +399,7 @@ traditional or simplified terms in the entry is displayed."
     ;; The documentation warns against using set-mark directly, but
     ;; push-mark seems to have other weird side-effects: in particular,
     ;; it suppresses the above call to forward-char...(???)
-    (set-mark pos)
+    (set-mark start-pos)
 
     ;; Display the returned dictionary entry.
     (message "%s" display-entry)))
