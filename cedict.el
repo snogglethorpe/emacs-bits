@@ -60,8 +60,14 @@ this setting applies when that isn't possible."
 
 ;;; Internal settings.
 
-(defvar cedict-lookup-at-point-max-size 10
+(defconst cedict-lookup-at-point-max-size 10
   "Maximum size of term searched for by `cedict-lookup-at-point'.")
+
+(defconst cedict-dubious-variant-definition-regexp
+  "/\\(?:old\\|japanese\\) variant of "
+  "A regexp which matches the definition portion of 'variant' entries.
+We typically want to ignore such entries when searching for a
+simplified character.")
 
 
 
@@ -214,8 +220,32 @@ If there are no entries that match any prefix of STRING, an error is signaled."
     ;; Find the first entry in the dictionary beginning with the first
     ;; character of STRING.
     ;;
-    (when (not (re-search-forward first-char-regexp nil t))
-      (error "No CEDICT entry found"))
+    ;; We have to be a little picky in case of /old variant .../ and
+    ;; /japanese variant .../ entries, in which case we only want to
+    ;; match when STRING starts with the _traditional_ character (the
+    ;; variant).  Because such entries are usually not contiguous with
+    ;; the main block of entries for the simplified character, stopping
+    ;; here on a simplified character match could cause us to miss the
+    ;; real definition.  The `cedict-dubious-variant-definition-regexp'
+    ;; regexp matches the precise set of defintions we want to treat
+    ;; this way.
+    ;;
+    (let ((keep-looking t))
+      (while keep-looking
+	;; Search for an initial entry matching the first character.
+	;;
+	(when (not (re-search-forward first-char-regexp nil t))
+	  (error "No CEDICT entry found"))
+
+	;; Stop looking, unless, as per the comment above, we're looking
+	;; at a "dubious variant" entry.  In the latter case, only stop
+	;; here when STRING's first character matches the traditional
+	;; term (which is the first thing in the entry).
+	;;
+	(unless (and (looking-at cedict-dubious-variant-definition-regexp)
+		     (not (= (aref string 0)
+			     (char-after (line-beginning-position)))))
+	  (setq keep-looking nil))))
 
     (let (;; Location of successful match
 	  (result-pos (point))
