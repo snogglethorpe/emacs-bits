@@ -359,7 +359,7 @@ traditional or simplified terms in the entry is displayed."
 
   ;; Skip whitespace so that point is more likely to be on a word we
   ;; can lookup.
-  (skip-chars-forward "[:space:]")
+  (skip-chars-forward "[:space:][:punct:]")
 
   (let* ((start-pos (point))
 
