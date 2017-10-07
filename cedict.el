@@ -1,4 +1,4 @@
-;;; cedict.el --- Dictionary lookup commands for CEDICT
+;;; cedict.el --- Dictionary lookup commands for CEDICT -*- lexical-binding: t -*-
 ;;
 ;; Copyright (C) 2017  Miles Bader
 ;;
@@ -18,12 +18,12 @@
 ;; Defines commands for convenient lookup of Chinese words in the
 ;; CEDICT Chinese-English dictionary.
 ;;
-;; CEDICT can currently be found at:  
+;; CEDICT can currently be found at:
 ;;
 ;;    https://www.mdbg.net/chinese/dictionary?page=cc-cedict
 ;;
 ;;
-;; The main user command is `cedict-lookup-at-point', which:
+;; The main user command is `cedict-lookup-longest-at-point' which:
 ;;
 ;;  1. Finds and displays the longest matching entry in CEDICT that
 ;;     matches characters following point.  The displayed entry is
@@ -39,6 +39,54 @@
 ;;     word, which highlights it.
 ;;
 
+;;
+;; This code uses a secondary data structure for lookups, as doing
+;; simple text-search based lookups is too inefficient.
+;;
+;; The reasons for this is are:
+;;
+;;   1. Because Chinese does not use word separators, we want to be able
+;;      to do "longest prefix" lookups, meaning we can't just search for
+;;      a single term and declare success or failure.
+;;
+;;   2. There may be multiple entries for a given search term, which may
+;;      not be adjacent in the file.
+;;
+;;   3. CEDICT dictionary files are not sorted in a useful way (they
+;;      actually are sorted but each entry has two keys which may have
+;;      different sort orders).
+;;
+;;   4. Related entries aren't always contiguous.
+;;
+;;   5. Because of points (2) - (4), to properly do "longest prefix"
+;;      lookups would require doing a full-buffer search (search
+;;      starting at the beginning of the buffer) for each character in a
+;;      lookup term, and CEDICT dictionary files are big enough that
+;;      this can be pretty slow, and this cost would be incurred for
+;;      *every lookup*.
+;;
+;; However, because CEDICT dictionaries can be very large, building the
+;; secondary data structure for the entire dictonary would be very slow.
+;;
+;; To get around these issues, what we do is build the secondary data
+;; structure incrementally, adding entries for every term beginning with
+;; a given character the first time such a term is looked up.  This
+;; requires a scan through the entire buffer, but only once for a given
+;; prefix character.  Subsequent lookups for terms with the same prefix
+;; character will use the secondary data structure instead, which is
+;; very fast.
+;;
+;; The result is that lookups are generally fast, but slightly slower
+;; the first time any term beginning with a given character is looked
+;; up.  However even these initial lookups are acceptably fast for
+;; interactive use.
+;;
+;; The secondary data structure used is a hash table mapping prefix
+;; characters to a lookup trie for all terms starting with that
+;; character.  The leaves in the trie contain buffer positions of
+;; entries in the CEDICT dictionary buffer.
+;;
+
 
 ;;; Code:
 
@@ -50,29 +98,41 @@
   :type 'file
   :group 'cedict)
 
-(defcustom cedict-default-term-type 'simplified
-  "Whether traditional or simplified character are preferred when presenting results.
-When possible, this choice is made automatically;
-this setting applies when that isn't possible."
-  :type '(choice simplified traditional)
-  :group 'cedict)
+(defface cedict-lookup-highlight
+  '((t :inherit highlight))
+  "Face for highlighting search term used by `cedict-lookup-at-point'."
+  :group 'whitespace)
 
 
 ;;; Internal settings.
 
-(defconst cedict-lookup-at-point-max-size 10
-  "Maximum size of term searched for by `cedict-lookup-at-point'.")
+(defconst cedict-suppressed-definition-regexp
+  ;; Almost all "surname" entries in CEDICT are pretty useless, as the
+  ;; given name matches the Pinyin portion of the entry exactly.  As
+  ;; so many characters in Chinese are valid surnames, these end up
+  ;; just being noise.
+  "/surname [^/]*/$"
+  "A regexp which matches the definition of CEDICT entries to be ignored.")
 
-(defconst cedict-dubious-variant-definition-regexp
-  "/\\(?:old\\|japanese\\) variant of "
-  "A regexp which matches the definition portion of 'variant' entries.
-We typically want to ignore such entries when searching for a
-simplified character.")
+(defconst cedict-traditional-only-definition-regexp
+  ;; CEDICT "variant" entries are a mixed bag and aren't alway
+  ;; consistent, but the main problematic entires we want to suppress
+  ;; are those where an old variant of a newer character actually
+  ;; includes the newer character as its simplified term, which are
+  ;; wrong if looked up via the simplified character (which should
+  ;; never return these entries).  Almost all single-character variant
+  ;; entries basically apply only to the traditional term, so we only
+  ;; add them via that term.  Multi-character variant entries often
+  ;; refer to variant _phrasing_, and so have both valid traditional
+  ;; and simplified terms.
+  "/[^/]*variant of .[\[|/]"
+  "A regexp which matches the definition of entries for which we only use traditional term.
+The simplified term in such entries is ignored.")
 
 
 
 ;;; ----------------------------------------------------------------
-;;; Functions for dealing with CEDICT entries.  
+;;; Functions for dealing with CEDICT entries.
 ;;
 ;; These functions are strongly dependent on the precise format of
 ;; the CEDICT dictionary file, which currently consists of one line
@@ -86,19 +146,13 @@ simplified character.")
 ;;   1. Each entry is on a single line
 ;;
 ;;   2. TERM_T comes at the beginning of the line
-;;   
+;;
 ;;   3. TERM_T and TERM_S are separated by a single space character
-;;   
+;;
 ;;   4. Comments are indicated by "#" at the beginning of the line
 ;;
 ;;   5. The pinyin section follows the terms, and is surrounded by spaces
 ;;      and square brackets.
-;;
-;; There's also some dependence on entry-ordering in the dictionary
-;; file.  The file is (seemingly) ordered so that prefixes precede
-;; the entries which they are prefixes of (e.g., "ab" comes before
-;; "abc"), so the code here simply returns the first entry which
-;; matches the longest-possible prefix of the search term.
 ;;
 
 
@@ -110,237 +164,219 @@ for that regexp will leave point on the definition)."
   (concat "^\\(?:" string "\\|[^[/\n#]* " string "\\)[^[/\n]]*[^]]*] "))
 
 
-(defun cedict-entry-term-length (entry)
-  "Return the length of the term in the CEDICT dictionary entry ENTRY."
-  (let ((entry-len (length entry))
-	(term-len 0))
-    (while (and (< term-len entry-len)
-		(/= (aref entry term-len) ?\s))
-      (setq term-len (1+ term-len)))
-    term-len))
+
+;;; ----------------------------------------------------------------
+;;; CEDICT lookup trie
 
-(defun cedict-entry-term-prefix-length (entry prefix)
-  "Return the length of a prefix of the term in the CEDICT
-dictionary entry ENTRY which matches PREFIX."
-  (let* ((term-len (cedict-entry-term-length entry))
-	 ;; The result can at most be as long as PREFIX.
-	 (max-len (min term-len (length prefix)))
-	 (pfx-len 0)
-	 ;; `char-equal' uses this.  It's irrelevant for Chinese
-	 ;; characters, but there are a few entries for roman letters.
-	 (case-fold-search t))
-    ;;
-    ;; CEDICT entries have two term fields, one for traditional
-    ;; characters, and one for simplified, so we consider both.  
-    ;;
-    ;; The traditional term is the first thing on the line, and the
-    ;; simplified term follows the traditional term and a space
-    ;; character.
-    ;;
-    (while (and (< pfx-len max-len)
-		(or (char-equal (aref entry pfx-len)
-				(aref prefix pfx-len))
-		    (char-equal (aref entry (+ term-len 1 pfx-len))
-				(aref prefix pfx-len))))
-      (setq pfx-len (1+ pfx-len)))
-    pfx-len))
+;; CEDICT lookup-trie format:
+;;
+;;  TRIE:	(ENTRIES . TAILS)
+;;  ENTRIES:	(ENTRY-POS ...)			; list of buffer positions
+;;  TAILS:	((CHAR . TAIL-TRIE) ...)	; association list of tail tries
+;;  CHAR:	unicode character
+;;  ENTRY-POS:	position in dictionary buffer
+;;
 
 
-(defun cedict-entry-strip-non-matching-term (entry string default-term-to-keep)
-  "Return the CEDICT dictionary entry ENTRY with the term field not matching STRING removed.
-If both fields match, then DEFAULT-TERM-TO-KEEP is used to choose which term field to keep: `simplified', or `traditional'."
-  (let* ((term-len (cedict-entry-term-length entry))
-	 ;; The result can at most be as long as STRING.
-	 (max-len (min term-len (length string)))
-	 (trad-pfx-len 0)
-	 (simp-pfx-len 0)
-	 ;; `char-equal' uses this.  It's irrelevant for Chinese
-	 ;; characters, but there are a few entries for roman letters.
-	 (case-fold-search t))
-    ;;
-    ;; CEDICT entries have two term fields, one for traditional
-    ;; characters, and one for simplified, so we consider both.  
+(defsubst cedict-make-trie ()
+  "Return a new empty CEDICT lookup trie."
+  (cons nil nil))
 
-    ;; See how much of the traditional term matches.
-    ;;
-    (while (and (< trad-pfx-len max-len)
-		(char-equal (aref entry trad-pfx-len)
-			    (aref string trad-pfx-len)))
-      (setq trad-pfx-len (1+ trad-pfx-len)))
+(defsubst cedict-trie-is-leaf-p (trie)
+  "Return non-nil if the CEDICT lookup trie TRIE has entries."
+  (car trie))
 
-    ;; Now see how much of the simplified term matches.
-    ;;
-    (while (and (< simp-pfx-len max-len)
-		(char-equal (aref entry (+ term-len 1 simp-pfx-len))
-			    (aref string simp-pfx-len)))
-      (setq simp-pfx-len (1+ simp-pfx-len)))
+(defsubst cedict-trie-next (trie next-char)
+  "Return a new CEDICT lookup trie, which appends NEXT-CHAR to TRIE.
+Return nil if there are no entries beginning with NEXT-CHAR."
+  (cdr (assq next-char (cdr trie))))
 
-    ;; Now choose whichever matched more characters in STRING.
-    ;;
-    (if (or (> simp-pfx-len trad-pfx-len)
-	    (eq default-term-to-keep 'simplified))
-	;;
-	;; choose simplified
-	(substring entry (+ term-len 1))
-      ;;
-      ;; choose traditional
-      (concat (substring entry 0 (+ term-len 1))
-	      (substring entry (+ term-len term-len 1))))))
+(defsubst cedict-trie-add-next (trie next-char)
+  "Return a new CEDICT lookup trie, which appends NEXT-CHAR to TRIE.
+If there are no existing entries beginning with NEXT-CHAR, a new
+empty trie is added to TRIE, and returned."
+  ;; Get the assoc cell for NEXT-CHAR
+  (let ((next-entry (assq next-char (cdr trie))))
+    ;; If there's none, add one
+    (when (null next-entry)
+      (setq next-entry (cons next-char (cons nil nil)))
+      (setcdr trie (cons next-entry (cdr trie))))
+    ;; ... and return the associated trie
+    (cdr next-entry)))
 
+(defsubst cedict-trie-entries (trie)
+  "Return the list of entries for the CEDICT lookup trie TRIE.
+The entry list is a list of buffer positions in the CEDICT
+dictionary buffer, each being the beginning of one entry."
+  (car trie))
 
-(defun cedict-low-quality-definition-p ()
-  "Return non-nil if the definition following point is 'low-quality'.
-Point must actually be at the start of the _definition_ portion
-of an entry (not at the beginning of the entry).
-
-'Low-quality' entries are ignored when another entry for the same term exists.
-
-Currently 'low-quality' means only /surname .../ entries."
-  (looking-at "/surname "))
+(defsubst cedict-trie-add-entry (trie entry-pos)
+  "Add the entry buffer position ENTRY-POS to TRIE.
+If ENTRY-POS already exists in TRIE, nothing is done.
+ENTRY-POS is added after any existing entries."
+  (unless (memq entry-pos (car trie))
+    ;; We're always going to add ENTRY-POS as a list, so just make it
+    ;; one here.
+    (setq entry-pos (list entry-pos))
+    (let ((tail (car trie)))
+      (if (null tail)
+	  ;; TRIE has no existing entries, so just add the first one.
+	  (setcar trie entry-pos)
+	;; Find the last cons-cell in TRIE's entry position list, so
+	;; we can extend it.
+	(while (cdr tail)
+	  (setq tail (cdr tail)))
+	(setcdr tail entry-pos)))))
 
 
 
 ;;; ----------------------------------------------------------------
-;;; Core search functions
+;;; CEDICT dictionary
+
+;; CEDICT dictionary format:
+;;
+;;  DICTIONARY:	hash-table<CHAR => TRIE>
+;;
 
 
-(defun cedict-search-for-string (string)
-  "Search for the term STRING in the current buffer, which should in CEDICT format.
-Set point to the beginning of the first matching entry.
-If there are no entries that match any prefix of STRING, an error is signaled."
-  (goto-char (point-min))
-  (let* ((first-char (substring string 0 1))
-	 (first-char-regexp (cedict-entry-regexp first-char))
-	 ;; 99.9% of the time we'll be looking up Chinese characters
-	 ;; where case-folding isn't an issue, but turn on
-	 ;; case-folding anyway to properly handle the remaining
-	 ;; rare cases.
-	 (case-fold-search t))
+(defun cedict-make-dict ()
+  "Return a new CEDICT dictionary structure.
+This is an internal data structure used to hold cached CEDICT
+dictionary entries."
+  (make-hash-table :test 'eq))
 
-    ;; Find the first entry in the dictionary beginning with the first
-    ;; character of STRING.
+(defsubst cedict-dict-lookup-char (dict char)
+  "Lookup CHAR in the CEDICT dictionary structure DICT, returning its trie.
+If there are no entries beginning with CHAR, return nil."
+  (gethash char dict))
+
+
+(defun cedict-dict-add-term (dictionary entry-pos)
+  "Add the entry at ENTRY-POS, for the term beginning at point, to DICTIONARY.
+The term added begins at point, and extends until the next space.
+DICTIONARY is a CEDICT dictionary data structure."
+  (let* ((first-char (char-after))
+	 (trie (gethash first-char dictionary)))
+
+    ;; If DICTIONARY has no entries beginning with FIRST-CHAR, add the
+    ;; initial data-structure to hold them.
     ;;
-    ;; We have to be a little picky in case of /old variant .../ and
-    ;; /japanese variant .../ entries, in which case we only want to
-    ;; match when STRING starts with the _traditional_ character (the
-    ;; variant).  Because such entries are usually not contiguous with
-    ;; the main block of entries for the simplified character, stopping
-    ;; here on a simplified character match could cause us to miss the
-    ;; real definition.  The `cedict-dubious-variant-definition-regexp'
-    ;; regexp matches the precise set of defintions we want to treat
-    ;; this way.
+    (when (null trie)
+      (setq trie (cedict-make-trie))
+      (puthash first-char trie dictionary))
+
+    ;; Skip the first character as we're done with it, it's only used as
+    ;; the dictionary key.
     ;;
-    (let ((keep-looking t))
-      (while keep-looking
-	;; Search for an initial entry matching the first character.
-	;;
-	(when (not (re-search-forward first-char-regexp nil t))
-	  (error "No CEDICT entry found"))
+    (forward-char 1)
 
-	;; Stop looking, unless, as per the comment above, we're looking
-	;; at a "dubious variant" entry.  In the latter case, only stop
-	;; here when STRING's first character matches the traditional
-	;; term (which is the first thing in the entry).
-	;;
-	(unless (and (looking-at cedict-dubious-variant-definition-regexp)
-		     (not (= (aref string 0)
-			     (char-after (line-beginning-position)))))
-	  (setq keep-looking nil))))
+    ;; Now scan the remaining characters in the term, building up the
+    ;; trie as necessary.
+    ;;
+    (let ((next-char (char-after)))
+      (while (and next-char (/= next-char ?\s))
+	(setq trie (cedict-trie-add-next trie next-char))
+	(forward-char 1)
+	(setq next-char (char-after))))
 
-    (let (;; Location of successful match
-	  (result-pos (point))
-	  ;; Length of the term we're looking for
-	  (search-term-length 1))
-
-      ;; Increase the size of the prefix of STRING we're looking for,
-      ;; unless our initial search found a "low-quality" definition.
-      ;;
-      ;; Although in most cases multiple definitions for a term are
-      ;; grouped into a single entry, CEDICT occasionally has multiple
-      ;; entries for the same term.
-      ;;
-      ;; By default our search process will return the first entry in
-      ;; such cases, so if we're looking at a low-quality definition,
-      ;; we'd like to continue searching further with this same
-      ;; prefix length, in case we can find something better.
-      ;;
-      (unless (cedict-low-quality-definition-p)
-	(setq search-term-length (1+ search-term-length)))
-
-      ;; Our initial search from the beginning of the file, for a
-      ;; single-character prefix of STRING, put us on the first entry
-      ;; starting with that characters.  Entries in the dictionary are sorted
-      ;; by the first character, so we can easily locate the founds of the
-      ;; section beginning with that character, which allows us to constrain
-      ;; subsequent searches for longer prefixes of STRING in a much smaller
-      ;; region.
-      ;;
-      (forward-line 0)			; move back to start of first entry
-      (let ((section-start (point)))
-
-	;; Skip until we find an entry not starting with the same first
-	;; character.
-	;;
-	(forward-line 1)
-	(while (looking-at first-char-regexp)
-	  (forward-line 1))
-
-	(let ((section-end (point))
-	      (failed nil))
-
-	  ;; In case we're going to start out by searching for another
-	  ;; single-character entry (which can happen when the initial
-	  ;; entry was "low-quality"), move to a place where the search
-	  ;; won't simply find the initial entry again.
-	  ;;
-	  (goto-char result-pos)
-
-	  (while (and (not failed) (<= search-term-length (length string)))
-	    (if (not
-		 (re-search-forward
-		  (cedict-entry-regexp (substring string 0 search-term-length))
-		  section-end
-		  t))
-		;; Stop the search loop
-		(setq failed t)
-
-	      ;; Remember the last place we successfully found something.
-	      (setq result-pos (point))
-
-	      ;; Increase the size of the prefix of STRING we're looking for,
-	      ;; unless this is a "low-quality" definition.
-	      ;;
-	      (unless (cedict-low-quality-definition-p)
-		(setq search-term-length (1+ search-term-length)))))
-
-	  ;; Move to the beginning of the last successful match.
-	  ;;
-	  (goto-char result-pos)
-	  (forward-line 0))))))
+    ;; There are no more characters left in this term, so TRIE is a
+    ;; leaf.  Add ENTRY-POS to it.
+    ;;
+    (cedict-trie-add-entry trie entry-pos)))
 
 
-(defun cedict-lookup-string (string)
-  "Lookup the term STRING in CEDICT, and return the longest matching entry.
-If there are no entries that match any prefix of STRING, an error is signaled."
-  (with-current-buffer (find-file-noselect cedict-file)
-    (cedict-search-for-string string)
-    (let ((result-start (point)))
-      (forward-line 1)
-      (buffer-substring-no-properties result-start (1- (point))))))
+(defun cedict-dict-add-entries (dictionary first-char)
+  "Add entries for terms beginning with the character FIRST-CHAR to DICTIONARY.
+All entries in the current buffer, which should be a
+CEDICT-format dictionary file, are added.
+DICTIONARY is a CEDICT dictionary data structure."
+  (let ((first-char-regexp (cedict-entry-regexp (char-to-string first-char)))
+	;; 99.9% of the time we'll be looking up Chinese characters
+	;; where case-folding isn't an issue, but turn on
+	;; case-folding anyway to properly handle the remaining
+	;; rare cases.
+	(case-fold-search t))
+
+    ;; Scan through the entire buffer looking for FIRST-CHAR-REGEXP, and
+    ;; add each line we find to DICTIONARY.
+    ;;
+    (goto-char (point-min))
+    (while (re-search-forward first-char-regexp nil t)
+      (unless (looking-at cedict-suppressed-definition-regexp)
+	(let ((traditional-only
+	       ;; true if we should only add this entry for the traditional term
+	       (looking-at cedict-traditional-only-definition-regexp)))
+
+	  (forward-line 0)
+	  (let ((entry-pos (point)))
+
+	    ;; Add an entry for the traditional term.
+	    (cedict-dict-add-term dictionary entry-pos)
+
+	    ;; Skip the separating space and add an entry for simplified term.
+	    (unless traditional-only
+	      (forward-char 1)
+	      (cedict-dict-add-term dictionary entry-pos))
+
+	    (forward-line 1)))))))
 
 
 
 ;;; ----------------------------------------------------------------
-;;; Helper functions
+;;; "Lookup state" functions, which hold state during term lookup.
+
+;; Lookup state format:
+;;
+;; LOOKUP-STATE:	(CURRENT-TRIE . DICT-BUF)
+;;
 
 
-(defun cedict-search-string-at-point ()
-  "Return a 'reasonably large' search string starting at point.
-'Reasonably large' means `cedict-lookup-at-point-max-size' characters long
-(because the actual lookup commands will return partial prefix matches, there's no need to be especially careful about the length of the search term)."
-  (buffer-substring-no-properties
-   (point)
-   (min (+ (point) cedict-lookup-at-point-max-size) (point-max))))
+(defvar cedict-dictionary nil
+  "Dictionary data structure for currently known CEDICT entries.
+This is buffer-local, and the CEDICT lookup code normally uses
+the definition in the buffer holding the dictionary text.")
+(make-variable-buffer-local 'cedict-dictionary)
+
+
+(defsubst cedict-lookup-state-is-leaf-p (lookup-state)
+  "Return true if LOOKUP-STATE has dictionary entries."
+  (cedict-trie-is-leaf-p (car lookup-state)))
+
+(defsubst cedict-lookup-state-next (lookup-state next-char)
+  "Return a new lookup state which appends NEXT-CHAR to LOOKUP-STATE."
+  (let ((next-trie (cedict-trie-next (car lookup-state) next-char)))
+    (and next-trie
+	 (cons next-trie
+	       (cdr lookup-state)))))
+
+
+(defun cedict-make-lookup-state (dict-buf first-char)
+  "Return a new lookup state for the CEDICT dictionary in the buffer DICT-BUF."
+  (with-current-buffer dict-buf
+    (when (null cedict-dictionary)
+      (setq cedict-dictionary (cedict-make-dict)))
+    (let ((dict cedict-dictionary))
+      (cons (or (cedict-dict-lookup-char dict first-char)
+		(progn
+		  (cedict-dict-add-entries dict first-char)
+		  (cedict-dict-lookup-char dict first-char)))
+	    dict-buf))))
+
+
+(defun cedict-lookup-state-definition-text (lookup-state &optional term)
+  "Returns a string containing all the definitions for LOOKUP-STATE."
+  (with-current-buffer (cdr lookup-state)
+    (let ((text nil))
+      (dolist (entry-pos (cedict-trie-entries (car lookup-state)))
+	(goto-char entry-pos)
+	(when term
+	  (skip-chars-forward "^["))
+	(let ((entry-text
+	       (buffer-substring-no-properties (point) (line-end-position))))
+	  (when term
+	    (setq entry-text (concat term " " entry-text)))
+	  (setq text (if text (concat text "\n" entry-text) entry-text))))
+      text)))
 
 
 
@@ -348,61 +384,114 @@ If there are no entries that match any prefix of STRING, an error is signaled."
 ;;; User commands
 
 
-(defun cedict-lookup-at-point (&optional both-terms)
+(defvar cedict-lookup-term-highlight-overlay
+  (let ((ov (make-overlay 1 1)))
+    (overlay-put ov 'face 'cedict-lookup-highlight)
+    ov)
+  "Overlay used by `cedict-lookup-longest-at-point' to highlight search term.")
+
+
+(defun cedict-lookup-longest-at-point (&optional both-terms)
   "Lookup the longest term following point in CEDICT, and display its entry.
-Point is moved forward by the number of characters which matched.
+
+Furthermore, point is moved forward to the end of the longest
+term found, and the term itself is temporarily highlighted in the
+buffer.
 
 If BOTH-TERMS is non-nil, then the CEDICT entry is displayed with
 both traditional and simplified terms; normally only one of the
-traditional or simplified terms in the entry is displayed."
+traditional or simplified terms in the entry is displayed.
+
+If there are multiple matching entries, they are all displayed."
   (interactive "P")
 
   ;; Skip whitespace so that point is more likely to be on a word we
   ;; can lookup.
   (skip-chars-forward "[:space:][:punct:]")
+  (when (eobp)
+    (error "No search term found"))
 
-  (let* ((start-pos (point))
+  (let ((lookup-state
+	 (cedict-make-lookup-state (find-file-noselect cedict-file)
+				   (char-after)))
+	(longest-lookup-state nil)
+	(start-pos (point)))
 
-	 (search-string (cedict-search-string-at-point))
+    (while lookup-state
+      (when (cedict-lookup-state-is-leaf-p lookup-state)
+	(setq longest-lookup-state lookup-state))
+      (forward-char 1)
+      (setq lookup-state (cedict-lookup-state-next lookup-state (char-after))))
 
-	 (entry
-	  ;; Do the actual dictionary lookup.
-	  (cedict-lookup-string search-string))
+    (if longest-lookup-state
+	(let ((definition
+		(cedict-lookup-state-definition-text
+		 longest-lookup-state
+		 (and (not both-terms)
+		      (buffer-substring-no-properties start-pos (point))))))
 
-	 (display-entry
-	  ;; Unless the users says otherwise, strip off one of the
-	  ;; simplified/traditional term fields, keeping whatever
-	  ;; matches SEARCH-STRING.
-	  (if both-terms
-	      entry
-	    (cedict-entry-strip-non-matching-term entry
-						  search-string
-						  cedict-default-term-type))))
+	  ;; Temporarily highlight the term we found.  As we lookup a
+	  ;; variable-length term, and move the cursor, this can help
+	  ;; the user keep track of what happened.
+	  ;;
+	  (move-overlay cedict-lookup-term-highlight-overlay
+			start-pos (point) (current-buffer))
 
-    ;; Move the cursor past the portion of the entry that's actually
-    ;; in the buffer, to make repeated invocation useful.
-    (forward-char (cedict-entry-term-prefix-length entry search-string))
+	  ;; Display the returned dictionary entry.
+	  (message "%s" definition)
 
-    ;; Move the mark so that it precedes the matched word, and fiddle
-    ;; with things so that the mark is temporarily activated, allowing
-    ;; it to serve as highlighting for the matched word.  The mark will
-    ;; be deactivated upon any cursor movement etc.
+	  (sit-for 5)
+	  (delete-overlay cedict-lookup-term-highlight-overlay))
+
+      (error "No CEDICT entries found beginning with \"%c\""
+	     (char-after start-pos)))))
+
+
+(defun cedict-lookup-string (term &optional both-terms)
+  "Lookup TERM in CEDICT, and display its entry.
+
+If there are multiple matching entries, they are all displayed.
+
+If BOTH-TERMS is non-nil, then the CEDICT entry is displayed with
+both traditional and simplified terms; normally only one of the
+traditional or simplified terms in the entry is displayed."
+  (interactive "MLookup Chinese term: \nP")
+
+  ;; Remove leading/trailing whitespace and punctuation from TERM.
+  (setq term (string-trim term "[[:space:][:punct:]]+" "[[:space:][:punct:]]+"))
+
+  (let ((lookup-state
+	 (cedict-make-lookup-state (find-file-noselect cedict-file)
+				   (aref term 0)))
+	(tpos 1))
+
+    ;; Scan through TERM, descending through the dictionary lookup trie as we go.
     ;;
-    ;; [This code copied from `handle-shift-selection' in Emacs
-    ;; simple.el; maybe a function to this should be added?]
-    (unless (and mark-active
-		 (eq (car-safe transient-mark-mode) 'only))
-      (setq-local transient-mark-mode
-		  (cons 'only
-			(unless (eq transient-mark-mode 'lambda)
-			  transient-mark-mode))))
-    ;; The documentation warns against using set-mark directly, but
-    ;; push-mark seems to have other weird side-effects: in particular,
-    ;; it suppresses the above call to forward-char...(???)
-    (set-mark start-pos)
+    (while (and lookup-state (< tpos (length term)))
+      (setq lookup-state
+	    (cedict-lookup-state-next lookup-state (aref term tpos)))
+      (setq tpos (1+ tpos)))
 
-    ;; Display the returned dictionary entry.
-    (message "%s" display-entry)))
+    ;; If we reached the end of term successfully, display the dictionary entry.
+    ;; Otherwise show an error.
+    ;;
+    (if lookup-state
+	(message "%s"
+		 (cedict-lookup-state-definition-text
+		  lookup-state (and (not both-terms) term)))
+      (error "No CEDICT entries found for \"%s\"" term))))
+
+
+(defun cedict-lookup-region (&optional start end both-terms)
+  "Lookup the string between START and END in CEDICT, and display its entry.
+
+If there are multiple matching entries, they are all displayed.
+
+If BOTH-TERMS is non-nil, then the CEDICT entry is displayed with
+both traditional and simplified terms; normally only one of the
+traditional or simplified terms in the entry is displayed."
+  (interactive "r")
+  (cedict-lookup-string (buffer-substring-no-properties start end) both-terms))
 
 
 ;;; cedict.el ends here
