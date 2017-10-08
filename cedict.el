@@ -429,6 +429,23 @@ The lookup state can be turned into a string using
   "Overlay used by `cedict-lookup-longest-at-point' to highlight search term.")
 
 
+(defvar cedict-last-lookup-state nil
+  "Last lookup-state returned by a CEDICT lookup command, for the
+use of `cedict-pop-to-next-entry'.")
+(defvar cedict-last-lookup-state-entry-index 0
+  "Numerical index of the particular entry in
+`cedict-last-lookup-state' which the user has visited using
+`cedict-pop-to-next-entry'")
+
+
+(defun cedict-record-last-lookup-state (lookup-state)
+  "Remember that a CEDICT lookup command found LOOKUP-STATE.
+
+This is used by `cedict-pop-to-next-entry' to visit the actual entry."
+  (setq cedict-last-lookup-state lookup-state)
+  (setq cedict-last-lookup-state-entry-index 0))
+
+
 (defun cedict-lookup-longest-at-point (&optional both-terms)
   "Lookup the longest term following point in CEDICT, and display its entry.
 
@@ -468,6 +485,11 @@ If there are multiple matching entries, they are all displayed."
 		 (and (not both-terms)
 		      (buffer-substring-no-properties start-pos (point))))))
 
+	  ;; Remember the last lookup-state we found for the use of
+	  ;; `cedict-pop-to-next-entry'
+	  ;;
+	  (cedict-record-last-lookup-state longest-lookup-state)
+
 	  ;; Temporarily highlight the term we found.  As we lookup a
 	  ;; variable-length term, and move the cursor, this can help
 	  ;; the user keep track of what happened.
@@ -500,6 +522,11 @@ traditional or simplified terms in the entry is displayed."
 
   (let ((lookup-state (cedict-lookup term)))
 
+    ;; Remember the last lookup-state we found for the use of
+    ;; `cedict-pop-to-next-entry'
+    ;;
+    (cedict-record-last-lookup-state lookup-state)
+
     ;; Display a textual definition unless there was an error.
     ;;
     (if lookup-state
@@ -520,6 +547,22 @@ both traditional and simplified terms; normally only one of the
 traditional or simplified terms in the entry is displayed."
   (interactive "r")
   (cedict-lookup-string (buffer-substring-no-properties start end) both-terms))
+
+
+(defun cedict-pop-to-next-entry ()
+  "Display the last entry looked up in CEDICT in an another window.
+If there were multiple entries associated with the lsat lookup,
+this command cycles through them."
+  (interactive)
+  (when (null cedict-last-lookup-state)
+    (error "No previous CEDICT lookup result."))
+  (let ((entries (cedict-lookup-state-entries cedict-last-lookup-state)))
+    (when (>= cedict-last-lookup-state-entry-index (length entries))
+      (setq cedict-last-lookup-state-entry-index 0))
+    (pop-to-buffer (cedict-lookup-state-buffer cedict-last-lookup-state))
+    (goto-char (nth cedict-last-lookup-state-entry-index entries))
+    (setq cedict-last-lookup-state-entry-index
+	  (1+ cedict-last-lookup-state-entry-index))))
 
 
 ;;; cedict.el ends here
