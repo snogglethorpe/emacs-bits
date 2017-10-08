@@ -353,30 +353,32 @@ the definition in the buffer holding the dictionary text.")
 (defun cedict-make-lookup-state (dict-buf first-char)
   "Return a new lookup state for the CEDICT dictionary in the buffer DICT-BUF."
   (with-current-buffer dict-buf
-    (when (null cedict-dictionary)
-      (setq cedict-dictionary (cedict-make-dict)))
-    (let ((dict cedict-dictionary))
-      (cons (or (cedict-dict-lookup-char dict first-char)
-		(progn
-		  (cedict-dict-add-entries dict first-char)
-		  (cedict-dict-lookup-char dict first-char)))
-	    dict-buf))))
+    (save-excursion
+      (when (null cedict-dictionary)
+	(setq cedict-dictionary (cedict-make-dict)))
+      (let ((dict cedict-dictionary))
+	(cons (or (cedict-dict-lookup-char dict first-char)
+		  (progn
+		    (cedict-dict-add-entries dict first-char)
+		    (cedict-dict-lookup-char dict first-char)))
+	      dict-buf)))))
 
 
 (defun cedict-lookup-state-definition-text (lookup-state &optional term)
   "Returns a string containing all the definitions for LOOKUP-STATE."
   (with-current-buffer (cdr lookup-state)
-    (let ((text nil))
-      (dolist (entry-pos (cedict-trie-entries (car lookup-state)))
-	(goto-char entry-pos)
-	(when term
-	  (skip-chars-forward "^["))
-	(let ((entry-text
-	       (buffer-substring-no-properties (point) (line-end-position))))
+    (save-excursion
+      (let ((text nil))
+	(dolist (entry-pos (cedict-trie-entries (car lookup-state)))
+	  (goto-char entry-pos)
 	  (when term
-	    (setq entry-text (concat term " " entry-text)))
-	  (setq text (if text (concat text "\n" entry-text) entry-text))))
-      text)))
+	    (skip-chars-forward "^["))
+	  (let ((entry-text
+		 (buffer-substring-no-properties (point) (line-end-position))))
+	    (when term
+	      (setq entry-text (concat term " " entry-text)))
+	    (setq text (if text (concat text "\n" entry-text) entry-text))))
+	text))))
 
 
 
