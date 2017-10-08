@@ -392,7 +392,21 @@ the definition in the buffer holding the dictionary text.")
 
 
 ;;; ----------------------------------------------------------------
-;;; General Lookup functions
+;;; Dictionary functions
+
+
+(defun cedict-buffer ()
+  "Return a buffer containing the CEDICT dictionary in `cedict-file'.
+If no such buffer currently exists, one is created."
+  (or (get-file-buffer cedict-file)
+      (with-current-buffer (create-file-buffer cedict-file)
+	;; Read the file
+	(let ((inhibit-read-only t))
+	  (erase-buffer)
+	  (insert-file-contents cedict-file t))
+	;; Do any special setup for this buffer
+	(setq buffer-read-only t)
+	(current-buffer))))
 
 
 (defun cedict-lookup (term)
@@ -402,9 +416,7 @@ If no entry is found for TERM, return nil.
 
 The lookup state can be turned into a string using
 `cedict-lookup-state-definition-text'."
-  (let ((lookup-state
-	 (cedict-make-lookup-state (find-file-noselect cedict-file)
-				   (aref term 0)))
+  (let ((lookup-state (cedict-make-lookup-state (cedict-buffer) (aref term 0)))
 	(tpos 1))
 
     ;; Scan through TERM, descending through the dictionary lookup trie as we go.
@@ -466,9 +478,7 @@ If there are multiple matching entries, they are all displayed."
   (when (eobp)
     (error "No search term found"))
 
-  (let ((lookup-state
-	 (cedict-make-lookup-state (find-file-noselect cedict-file)
-				   (char-after)))
+  (let ((lookup-state (cedict-make-lookup-state (cedict-buffer) (char-after)))
 	(longest-lookup-state nil)
 	(start-pos (point)))
 
