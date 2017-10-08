@@ -342,6 +342,15 @@ the definition in the buffer holding the dictionary text.")
   "Return true if LOOKUP-STATE has dictionary entries."
   (cedict-trie-is-leaf-p (car lookup-state)))
 
+(defun cedict-lookup-state-entries (lookup-state)
+  "Return a list of the CEDICT entry buffer positions in LOOKUP-STATE."
+  (cedict-trie-entries (car lookup-state)))
+
+(defsubst cedict-lookup-state-buffer (lookup-state)
+  "Return the buffer containing the CEDICT dictionary for LOOKUP-STATE."
+  (cdr lookup-state))
+
+
 (defsubst cedict-lookup-state-next (lookup-state next-char)
   "Return a new lookup state which appends NEXT-CHAR to LOOKUP-STATE."
   (let ((next-trie (cedict-trie-next (car lookup-state) next-char)))
