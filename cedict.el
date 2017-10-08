@@ -392,6 +392,33 @@ the definition in the buffer holding the dictionary text.")
 
 
 ;;; ----------------------------------------------------------------
+;;; General Lookup functions
+
+
+(defun cedict-lookup (term)
+  "Lookup TERM in CEDICT and return the final lookup state.
+
+If no entry is found for TERM, return nil.
+
+The lookup state can be turned into a string using
+`cedict-lookup-state-definition-text'."
+  (let ((lookup-state
+	 (cedict-make-lookup-state (find-file-noselect cedict-file)
+				   (aref term 0)))
+	(tpos 1))
+
+    ;; Scan through TERM, descending through the dictionary lookup trie as we go.
+    ;;
+    (while (and lookup-state (< tpos (length term)))
+      (setq lookup-state
+	    (cedict-lookup-state-next lookup-state (aref term tpos)))
+      (setq tpos (1+ tpos)))
+
+    lookup-state))
+
+
+
+;;; ----------------------------------------------------------------
 ;;; User commands
 
 
@@ -471,25 +498,15 @@ traditional or simplified terms in the entry is displayed."
   ;; Remove leading/trailing whitespace and punctuation from TERM.
   (setq term (string-trim term "[[:space:][:punct:]]+" "[[:space:][:punct:]]+"))
 
-  (let ((lookup-state
-	 (cedict-make-lookup-state (find-file-noselect cedict-file)
-				   (aref term 0)))
-	(tpos 1))
+  (let ((lookup-state (cedict-lookup term)))
 
-    ;; Scan through TERM, descending through the dictionary lookup trie as we go.
-    ;;
-    (while (and lookup-state (< tpos (length term)))
-      (setq lookup-state
-	    (cedict-lookup-state-next lookup-state (aref term tpos)))
-      (setq tpos (1+ tpos)))
-
-    ;; If we reached the end of term successfully, display the dictionary entry.
-    ;; Otherwise show an error.
+    ;; Display a textual definition unless there was an error.
     ;;
     (if lookup-state
 	(message "%s"
 		 (cedict-lookup-state-definition-text
-		  lookup-state (and (not both-terms) term)))
+		  lookup-state
+		  (and (not both-terms) term)))
       (error "No CEDICT entries found for \"%s\"" term))))
 
 
