@@ -483,11 +483,13 @@ If there are multiple matching entries, they are all displayed."
 
   (let ((lookup-state (cedict-make-lookup-state (cedict-buffer) (char-after)))
 	(longest-lookup-state nil)
+	(longest-pos nil)
 	(start-pos (point)))
 
     (while lookup-state
       (when (cedict-lookup-state-is-leaf-p lookup-state)
-	(setq longest-lookup-state lookup-state))
+	(setq longest-lookup-state lookup-state)
+	(setq longest-pos (1+ (point))))
       (forward-char 1)
       (setq lookup-state (cedict-lookup-state-next lookup-state (char-after))))
 
@@ -496,7 +498,10 @@ If there are multiple matching entries, they are all displayed."
 		(cedict-lookup-state-definition-text
 		 longest-lookup-state
 		 (and (not both-terms)
-		      (buffer-substring-no-properties start-pos (point))))))
+		      (buffer-substring-no-properties start-pos
+						      longest-pos)))))
+
+	  (goto-char longest-pos)
 
 	  ;; Remember the last lookup-state we found for the use of
 	  ;; `cedict-pop-to-next-entry'
@@ -508,7 +513,7 @@ If there are multiple matching entries, they are all displayed."
 	  ;; the user keep track of what happened.
 	  ;;
 	  (move-overlay cedict-lookup-term-highlight-overlay
-			start-pos (point) (current-buffer))
+			start-pos longest-pos (current-buffer))
 
 	  ;; Display the returned dictionary entry.
 	  (message "%s" definition)
