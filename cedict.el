@@ -419,14 +419,17 @@ The lookup state can be turned into a string using
   (let ((lookup-state (cedict-make-lookup-state (cedict-buffer) (aref term 0)))
 	(tpos 1))
 
-    ;; Scan through TERM, descending through the dictionary lookup trie as we go.
+    ;; Scan through TERM, descending through the dictionary lookup
+    ;; trie as we go.
     ;;
     (while (and lookup-state (< tpos (length term)))
       (setq lookup-state
 	    (cedict-lookup-state-next lookup-state (aref term tpos)))
       (setq tpos (1+ tpos)))
 
-    lookup-state))
+    (and lookup-state
+	 (cedict-lookup-state-is-leaf-p lookup-state)
+	 lookup-state)))
 
 
 
