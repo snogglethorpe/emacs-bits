@@ -29,14 +29,23 @@
 ;;     matches characters following point.  The displayed entry is
 ;;     modified to include only one term field (CEDICT entries
 ;;     normally contain term fields for both traditional and
-;;     simplified characters).
+;;     simplified characters).  If there are multiple matching
+;;     entries, all are displayed.
 ;;
 ;;  2. Moves point forward by the number of matching characters.
 ;;     This simplifies the process of looking up consecutive words
 ;;     in a text.
 ;;
-;;  3. Temporarily activates the mark at the start of the matched
-;;     word, which highlights it.
+;;  3. Temporarily highlights the term looked up.
+;;
+;; Some additional commands are `cedict-lookup-region' and
+;; `cedict-lookup-string'.
+;;
+;; Following one of the cedict lookup commands, the command
+;; `cedict-pop-to-next-entry' will display the CEDICT buffer in a
+;; window, with point positioned at the entry found.  A CEDICT lookup
+;; may return multiple entries, and repeated invocations of this
+;; command will cycle between them.
 ;;
 
 ;;
@@ -568,9 +577,12 @@ traditional or simplified terms in the entry is displayed."
 
 
 (defun cedict-pop-to-next-entry ()
-  "Display the last entry looked up in CEDICT in an another window.
-If there were multiple entries associated with the lsat lookup,
-this command cycles through them."
+  "Display the last CEDICT entry looked up in another window.
+The displayed buffer is the actual CEDICT dictionary file, with
+point positioned at the appropriate entry.
+
+If there are multiple entries associated with the last lookup,
+repeated invocations of this command cycles through them."
   (interactive)
   (when (null cedict-last-lookup-state)
     (error "No previous CEDICT lookup result."))
