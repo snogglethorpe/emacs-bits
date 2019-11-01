@@ -1,9 +1,20 @@
-;;; $Header: /home/gd3/miles/src/elisp/RCS/ez.el,v 1.7 1996/08/09 14:06:46 miles Exp $
-;;; ----------------------------------------------------------------
-;;; ez.el -- ez [gosmacs like] compatibility package for gnu-emacs
-;;; Copyright (C) 1988, Miles Bader <miles@cogsci.ed.ac.uk>
-;;; ----------------------------------------------------------------
-;;;
+;;; ez.el --- Ez [Gosmacs-like] compatibility package for GNU emacs
+;;
+;; Copyright (C) 1988,2019  Miles Bader
+;;
+;; Author: Miles Bader <miles@gnu.org>
+;; Created: 10-Jan-1988
+;; Keywords: convenience
+
+;; This file is not part of GNU Emacs.
+
+;; This file is free software.  You can redistribute it and/or modify
+;; it under the terms of the GNU General Public License as published by
+;; the Free Software Foundation, either version 3, or (at your option)
+;; any later version.  See the file COPYING for more details.
+
+
+;;; Code:
 
 (provide 'ez)
 
