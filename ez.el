@@ -270,6 +270,11 @@ and the ARG-1 previous sexps to lower case."
 (global-set-key "\C-xi" 'indent-rigidly)
 (global-set-key "\C-x\C-o" 'switch-to-old-buffer)
 
+;; Because we rebind M-/, steal another key for dabbrev-expand, which
+;; is a very useful function.
+;;
+(global-set-key "\M-'" 'dabbrev-expand)
+
 
 ;;; ---------------------------------------------------------------
 ;;; the following stuff stolen from William Lott's .emacs
