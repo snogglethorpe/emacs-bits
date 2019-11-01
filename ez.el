@@ -174,6 +174,12 @@ See the function `display-buffer'."
   (interactive)
   (other-window -1))
 
+(defun ez-delete-window-or-bury-buffer ()
+  (interactive)
+  (if (one-window-p)
+      (bury-buffer)
+    (delete-window)))
+
 (defun ez-line-to-top-of-window ()
   "Moves line top of the current window"
   (interactive)
@@ -248,7 +254,7 @@ and the ARG-1 previous sexps to lower case."
 (global-set-key "\C-x\C-p" 'previous-error)
 (global-set-key "\C-xn" 'other-window)
 (global-set-key "\C-xp" 'ez-previous-window)
-(global-set-key "\C-xd" 'delete-window)
+(global-set-key "\C-xd" 'ez-delete-window-or-bury-buffer)
 (global-set-key "\C-x5d" 'delete-frame)
 (global-set-key "\C-x\C-v" 'ez-visit-file)
 (global-set-key "\C-x4\C-v" 'ez-visit-file-other-window)
