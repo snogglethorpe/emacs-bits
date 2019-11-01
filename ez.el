@@ -264,8 +264,6 @@ and the ARG-1 previous sexps to lower case."
 (global-set-key "\C-xi" 'indent-rigidly)
 (global-set-key "\C-x\C-o" 'switch-to-old-buffer)
 
-;;; compile with hc ok
-(setq compilation-error-regexp "\\(\"[^\"]+\",L[0-9]+\\)\\|\\([^ \n]+\\(: *\\|, line \\|(\\)[0-9]+\\)\\|\\([0-9]+.*of *[^ \n]+\\)")
 
 ;;; ---------------------------------------------------------------
 ;;; the following stuff stolen from William Lott's .emacs
