@@ -182,7 +182,7 @@ See the function `display-buffer'."
 (defun ez-hack-sexp-region (fun count)
   (save-excursion
     (let ((syn (char-syntax (following-char))))
-      (if (or (eq syn ?_) (eq syn ?w) (eq syn ?() (eq syn ?") (eq syn ?'))
+      (if (or (eq syn ?_) (eq syn ?w) (eq syn ?\() (eq syn ?\") (eq syn ?\'))
 	  (forward-sexp 1)))
     (let ((start (point)))
       (backward-sexp count)
