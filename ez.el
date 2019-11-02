@@ -239,7 +239,7 @@ and the ARG-1 previous sexps to lower case."
 (global-set-key "\M-c" 'ez-capitalize-prev-sexp)
 (global-set-key "\M-\C-r" 'isearch-backward-regexp)
 (global-set-key "\M-g" 'fill-paragraph)
-(global-set-key "\M-%" 'toggle-read-only)
+(global-set-key "\M-%" 'read-only-mode)
 (global-set-key "\M-!" 'ez-line-to-top-of-window)
 (global-set-key "\M-n" 'goto-line)
 (global-set-key "\M-N" 'what-line)
