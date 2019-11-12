@@ -294,6 +294,7 @@ and the ARG-1 previous sexps to lower case."
 (if (boundp 'minibuffer-local-ns-map)
     (define-key minibuffer-local-ns-map " " 'minibuffer-complete))
 (define-key minibuffer-local-must-match-map " " 'minibuffer-complete)
+(define-key minibuffer-local-filename-completion-map " " 'minibuffer-complete)
 
 ; I don't like the completion code doing things because it thought I wanted
 ; them done. If I want help I will type '?', when I want to answer I will hit
